@@ -15,8 +15,6 @@ API_TOKEN = os.getenv("JOPLIN_DATA_API_TOKEN")
 SERVER_URL = os.getenv("JOPLIN_SERVER_URL")
 USER = os.getenv("JOPLIN_USERNAME")
 PASS = os.getenv("JOPLIN_PASSWORD")
-READECK_URL = os.getenv("READECK_URL")
-READECK_TOKEN = os.getenv("READECK_TOKEN")
 USERNAME = os.getenv("INSTAPAPER_USERNAME")
 PASSWORD = os.getenv("INSTAPAPER_PASSWORD")
 NOTES_URL = os.getenv("NOTES_URL")
@@ -151,35 +149,6 @@ def check_tag_on_note(api_base_url, token, tag_id, note_id):
             return False
     else:
         res.raise_for_status()
-
-
-def add_to_readeck(bookmark_url, title=None, tags=[]):
-    # API endpoint to create a new bookmark
-    endpoint = f"{READECK_URL}/api/bookmarks"
-
-    # Prepare headers and payload
-    headers = {
-        "Authorization": f"Bearer {READECK_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    tags.append(format_ym_week())
-
-    payload = {
-        "url": bookmark_url,
-        "title": title,
-        "labels": tags
-    }
-    #print (payload)
-
-    # Send the request
-    response = requests.post(endpoint, json=payload, headers=headers)
-
-    # Handle the response
-    if response.status_code == 202:
-        return True
-    else:
-        return False
 
 
 def get_session(user, passwd):
@@ -442,24 +411,6 @@ def pub2instapaper(session_id, items, dest_nb_id, fail_nb_id):
                 print (f"move to notebook fail:\t {note_title}")
         
 
-def pub2readeck(session_id, items, dest_nb_id, fail_nb_id):
-    for note in items:
-        note_id = note['id']
-        note_title = note['title']
-
-        tag_id = ensure_yearmonth_tag(API_URL, API_TOKEN)
-        apply_tag_to_note(API_URL, API_TOKEN, tag_id, note_id)
-
-        if add_to_readeck(f"{NOTES_URL}{NOTES_URL_PREFIX}/n/{note_id}", title = note_title):
-            print (f"add url to readeck:\t{note_title}")
-            if move_note_to_notebook(API_URL, API_TOKEN, note_id, dest_nb_id):
-                print (f"move to notebook {str_year}:\t {note_title}")
-        else:
-            print (f"add url fail:\t {note_title}")
-            if move_note_to_notebook(API_URL, API_TOKEN, note_id, fail_nb_id):
-                print (f"move to notebook fail:\t {note_title}")
-
-
 if __name__ == "__main__":
     session_id = get_session(USER, PASS)
     if session_id is None:
@@ -475,11 +426,6 @@ if __name__ == "__main__":
     dest_nb_id = get_notebook_id_by_name(API_URL, API_TOKEN, str_year)
 
     items = get_filtered_notes(API_URL, API_TOKEN, CREATED_AFTER, None, nb_id)
-
-    if READECK_TOKEN is not None: 
-        pub2readeck(session_id, items, dest_nb_id, fail_nb_id)
-    else:
-        print ("Do not publish to readeck")
 
     pub2instapaper(session_id, items, dest_nb_id, fail_nb_id)
 
