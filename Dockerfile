@@ -25,6 +25,7 @@ RUN adduser --disabled-password --gecos "" app
 # Copy the environment, but not the source code
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app note2read.py /app
+COPY --chown=app:app news_digest.py /app
 COPY --chown=app:app hello.py /app
 
 USER app
