@@ -8,7 +8,7 @@
   報導者  RSS（全部，量少）
 
 排程：一天跑數次（例如每 3 小時）。平常只抓新聞存進暫存檔 NEWS_STATE_FILE；
-到了 NEWS_PUBLISH_HOUR 那一小時，再把累積的新聞彙整成一則筆記並清空暫存。
+到了發布時段（NEWS_PUBLISH_WEEKDAY 的 NEWS_PUBLISH_HOUR 那一小時），再把累積的新聞彙整成一則筆記並清空暫存。
 （中央社每個分類 RSS 只留最新 20 則，一天只抓一次會漏掉白天大部分新聞）
 
 去重：
@@ -25,7 +25,9 @@
   NEWS_MAX_PER_SECTION  每個分類最多列幾則，取最新的（預設 50）
   NEWS_STATE_FILE       暫存檔路徑（預設 ./news_pending.json）
   NEWS_PUBLISH_HOUR     自動模式下，幾點那一小時發布（預設 5，台北時間）
-  NEWS_DEDUP_DAYS       跨日去重回看天數（預設 7）
+  NEWS_PUBLISH_WEEKDAY  自動模式下，星期幾發布（0=一 … 6=日）；留空 = 每天發布（預設留空）
+  NEWS_DEDUP_DAYS       回看幾天內的摘要筆記做去重（預設 10，週報需 > 7）
+  NEWS_PENDING_DAYS     暫存檔中超過幾天的新聞丟棄，避免發布失敗時無限累積（預設 14）
   NEWS_SIMILARITY       標題相似度門檻 0~1（預設 0.75）
 
 用法：
@@ -68,7 +70,10 @@ LOOKBACK_HOURS = float(os.getenv("NEWS_LOOKBACK_HOURS", "30"))
 MAX_PER_SECTION = int(os.getenv("NEWS_MAX_PER_SECTION", "50"))
 STATE_FILE = os.getenv("NEWS_STATE_FILE", "news_pending.json")
 PUBLISH_HOUR = int(os.getenv("NEWS_PUBLISH_HOUR", "5"))
-DEDUP_DAYS = int(os.getenv("NEWS_DEDUP_DAYS", "7"))
+_weekday = os.getenv("NEWS_PUBLISH_WEEKDAY", "").strip()
+PUBLISH_WEEKDAY = int(_weekday) if _weekday else None
+DEDUP_DAYS = int(os.getenv("NEWS_DEDUP_DAYS", "10"))
+PENDING_DAYS = int(os.getenv("NEWS_PENDING_DAYS", "14"))
 SIMILARITY = float(os.getenv("NEWS_SIMILARITY", "0.75"))
 
 UA = {"User-Agent": "Mozilla/5.0 (news-digest)"}
@@ -263,7 +268,7 @@ def load_pending(now: datetime) -> list[tuple[str, Article]]:
     except FileNotFoundError:
         return []
     out = []
-    oldest = now - timedelta(days=DEDUP_DAYS)
+    oldest = now - timedelta(days=PENDING_DAYS)
     for d in raw:
         published = datetime.fromisoformat(d["published"]) if d.get("published") else None
         if published and published < oldest:
@@ -335,7 +340,7 @@ def main() -> int:
     elif "--publish" in args or dry_run:
         publish = True
     else:  # 自動：到了發布時段就發布，其他時段只累積
-        publish = now.hour == PUBLISH_HOUR
+        publish = now.hour == PUBLISH_HOUR and (PUBLISH_WEEKDAY is None or now.weekday() == PUBLISH_WEEKDAY)
 
     if not API_URL or not API_TOKEN or (publish and not dry_run and not INBOX):
         print("請設定 JOPLIN_DATA_API_URL、JOPLIN_DATA_API_TOKEN、INBOX", file=sys.stderr)
@@ -359,7 +364,11 @@ def main() -> int:
         print("沒有新的新聞，不建立筆記", file=sys.stderr)
         return 0
 
-    title = f"{TITLE_PREFIX} {now:%Y-%m-%d}"
+    dates = [a.published for _, a in items if a.published]
+    start = min(dates) if dates else now
+    # 週報：標題帶日期區間；日報：只有當天日期。前綴不變，跨次去重靠它找舊摘要
+    span = f"{start:%Y-%m-%d} ~ {now:%m-%d}" if (now - start).days >= 2 else f"{now:%Y-%m-%d}"
+    title = f"{TITLE_PREFIX} {span}"
     body = render(now, items)
     if dry_run:
         print(f"# {title}\n\n{body}")
