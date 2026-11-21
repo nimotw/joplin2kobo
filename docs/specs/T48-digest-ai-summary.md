@@ -1,8 +1,10 @@
-# T48：新聞摘要改成「影響全世界／全台灣／少數人」三段話
+# T48：新聞摘要改成每週一篇、「影響全世界／全台灣／少數人」三段話
+
+（併入 T43：每日改每週。）
 
 ## 背景
 
-每天的新聞摘要動輒 80～200 則，太多看不完。使用者想要依影響範圍分成三類，每類讀一段話就好。
+每天的新聞摘要動輒 80～200 則，太多看不完。使用者想要改成**每週一篇**，依影響範圍分成三類，每類讀一段話就好。
 
 分類和寫摘要需要語言模型。使用者不接受另外申請 API key 和付費，所以改用主機上的 `claude -p`（Claude Code 非互動模式，走使用者現有的 Claude 訂閱）。`claude -p` 只能在主機上跑，所以這一步放在主機 cron，不放在 K8s。
 
@@ -11,12 +13,13 @@
 ## 範圍
 
 做：
-- 新程式 `digest_summary.py`（joplin2kobo repo），由主機 crontab 每天 05:52 執行。
+- 改成每週發布：每週一 05:50 發布一篇，涵蓋上週一 05:50 到這週一 05:50（約上週一到週日）。只改 ConfigMap：`NEWS_PUBLISH_WEEKDAY="0"`，`NEWS_MAX_PER_SECTION="1000"`（原本 50，週報會只剩最後一兩天）。
+- 新程式 `digest_summary.py`（joplin2kobo repo），由主機 crontab 每天 05:51 執行（不是發布日就找不到筆記，直接結束）。
 - 找出今天 05:50 建立、還在收件匣裡的摘要筆記，交給 `claude -p` 分三類各寫一段，再把筆記改寫成「三段話＋相關連結」。
 - `news_digest.py` 發布時，把這次發布的所有新聞記到 PVC 的發布紀錄，讓跨日去重不依賴筆記內容（因為改寫後的筆記不再列出全部新聞，見「去重」）。
 
 不做：
-- 不改新聞來源、抓取、05:50 發布時間。
+- 不改新聞來源、抓取時間（每 3 小時）、05:50 發布時間。
 - 不改「新使用者」段落（T42／T44），改寫時原樣保留。
 - 不接 Claude API。
 
@@ -31,7 +34,7 @@
     "taiwan": {"text": "…", "refs": [2, 3]},
     "local":  {"text": "…", "refs": [7]}}
    ```
-   `text` 是繁體中文一段話、約 300 字、只根據提供的標題和簡介；`refs` 是這段話提到的新聞編號。
+   `text` 是繁體中文一段話、約 500 字、只根據提供的標題和簡介；`refs` 是這段話提到的新聞編號。
 5. 檢查輸出（見驗收條件），合格才改寫。
 6. 改寫前再讀一次筆記：如果已經不在收件匣（06:00 的 note2read 已經把它送出並搬走），就不改，記一筆 log 結束。
 7. 用 `PUT /notes/{id}` 寫回新內文。
@@ -67,7 +70,7 @@
 ### 呼叫 `claude -p`
 
 - 關掉所有工具與自訂設定，只讓它輸出文字：`claude -p --tools "" --safe-mode --strict-mcp-config --no-session-persistence --output-format json`，prompt 從 stdin 傳入。新聞標題和簡介是外部內容，不能讓它有能力執行任何動作。
-- 逾時 240 秒（05:52 開始，06:00 之前要結束）。
+- 逾時 420 秒（05:51 開始，06:00 之前要結束）。
 
 ## 去重
 
@@ -95,20 +98,23 @@
 
 ## 部署
 
-- 主機 crontab（使用者 dany）：`52 5 * * * cd ~/projs/joplin/joplin2kobo && uv run python digest_summary.py >> ~/.local/state/news-summary/summary.log 2>&1`。
+- 主機 crontab（使用者 dany）：`51 5 * * * cd ~/projs/joplin/joplin2kobo && uv run python digest_summary.py >> ~/.local/state/news-summary/summary.log 2>&1`。
 - 環境變數放 `~/.config/news-summary.env`（不進 repo）：`JOPLIN_DATA_API_URL`、`JOPLIN_DATA_API_TOKEN`、`INBOX=kobo`。
-- K8s：image 升 `1.5.0`（發布紀錄）；CronJob／ConfigMap 不用改。
+- K8s：image 升 `1.5.0`（發布紀錄）；ConfigMap `news-digest-env` 改 `NEWS_PUBLISH_WEEKDAY="0"`、`NEWS_MAX_PER_SECTION="1000"`；CronJob 不用改。
+- 請 garmin（T37）把 `new-users.json` 的 `windowDays` 從 7 調到 10，週報有緩衝（T44 游標從上週的 generated 往後算，需要涵蓋 7 天以上）。
 
 ## 限制
 
 - 時間：`claude -p` 必須在 06:00 note2read 之前完成。來不及就照舊送原本的完整摘要（驗收條件 8）。
 - 用量：每天一次 `claude -p`，佔用使用者的 Claude 訂閱額度。
-- 改成每週（T43）後，一次可能有 300 則以上，prompt 會變長，屆時再看時間是否足夠。
+- 一週約 500～600 則，prompt 較長；`claude -p` 的時間主要花在輸出三段話，預估 7 分鐘內完成。逾時就照舊送完整列表。
+- 失敗時送出的完整列表會很長（每類上限 1000）。
 - 正確性：摘要由模型產生，可能有誤；只根據標題和簡介，不讀全文。
 
 ## 回滾
 
 - 刪掉主機 crontab 那一行，摘要就恢復成完整列表。
+- 要恢復每天發布：ConfigMap 的 `NEWS_PUBLISH_WEEKDAY` 改回 `""`、`NEWS_MAX_PER_SECTION` 改回 `"50"`。
 - 發布紀錄留著無害；要完全回滾就把 image 換回 `1.4.1`。
 
 ## 未決問題
