@@ -148,6 +148,63 @@ def test_14_unparseable_first_seen_is_skipped():
     assert [d["county"] for d in devices] == ["台北市"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("county", 123),
+    ("county", ["嘉義縣"]),
+])
+def test_15_device_with_wrong_types_is_skipped(capsys, field, value):
+    bad = device(NOW)
+    bad[field] = value
+    data = stats(devices=[bad, device(NOW, county="台北市"), device(NOW, county=None)])
+    devices, _ = nd.filter_new_users(data, NOW - timedelta(days=1))
+    assert [d["county"] for d in devices] == ["台北市", None]
+    assert "跳過 1 項" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("field,value", [
+    ("opens", "12"),
+    ("opens", 1.5),
+    ("opens", True),
+    ("opens", -1),
+    ("opens", None),
+    ("opens", "missing"),
+    ("countries", "TW"),
+    ("countries", ["TW", 1]),
+    ("countries", None),
+])
+def test_15_link_with_wrong_types_is_skipped(capsys, field, value):
+    bad = link(NOW, opens=100)
+    if value == "missing":
+        del bad[field]
+    else:
+        bad[field] = value
+    data = stats(links=[bad, link(NOW, opens=7)])
+    _, links = nd.filter_new_users(data, NOW - timedelta(days=1))
+    assert [l["opens"] for l in links] == [7]
+    assert "跳過 1 項" in capsys.readouterr().err
+
+
+def test_15_non_object_items_are_skipped(capsys):
+    data = stats(devices=["oops", device(NOW)], links=[42, link(NOW, opens=7)])
+    devices, links = nd.filter_new_users(data, NOW - timedelta(days=1))
+    assert len(devices) == 1 and [l["opens"] for l in links] == [7]
+    assert "跳過 2 項" in capsys.readouterr().err
+
+
+def test_15_valid_items_print_no_warning(capsys):
+    data = stats(devices=[device(NOW), device(NOW, county=None)], links=[link(NOW, countries=[])])
+    nd.filter_new_users(data, NOW - timedelta(days=1))
+    assert capsys.readouterr().err == ""
+
+
+def test_15_publish_succeeds_with_bad_items(run_main):
+    bad = link(NOW, opens="lots")
+    code, created, _ = run_main("--publish", new_users=stats(devices=[device(NOW)], links=[bad]))
+    assert code == 0 and len(created) == 1
+    body = created[0][1]
+    assert "- 新裝置 1 台：嘉義縣" in body and "新連結" not in body
+
+
 # ---------- 主流程 ----------
 
 @pytest.fixture

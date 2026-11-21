@@ -332,14 +332,37 @@ def load_new_users(path: str, now: datetime) -> Optional[dict]:
 
 def filter_new_users(data: dict, since: Optional[datetime]) -> tuple[list[dict], list[dict]]:
     """篩出 firstSeen 嚴格晚於 since 的裝置與連結（since 為 None 時全收），依 firstSeen 排序。"""
-    def pick(entries) -> list[dict]:
+    skipped = 0
+
+    def pick(entries, valid) -> list[dict]:
+        nonlocal skipped
         out = []
         for e in entries:
-            t = _parse_time(e.get("firstSeen")) if isinstance(e, dict) else None
+            if not isinstance(e, dict) or not valid(e):
+                skipped += 1
+                continue
+            t = _parse_time(e.get("firstSeen"))
             if t and (since is None or t > since):
                 out.append((t, e))
         return [e for _, e in sorted(out, key=lambda x: x[0])]
-    return pick(data["devices"]), pick(data["links"])
+
+    devices = pick(data["devices"], _valid_device)
+    links = pick(data["links"], _valid_link)
+    if skipped:
+        print(f"⚠️ 新使用者統計：跳過 {skipped} 項（欄位型別不對）", file=sys.stderr)
+    return devices, links
+
+
+def _valid_device(d: dict) -> bool:
+    county = d.get("county")
+    return county is None or isinstance(county, str)
+
+
+def _valid_link(l: dict) -> bool:
+    opens = l.get("opens")
+    countries = l.get("countries")
+    return (isinstance(opens, int) and not isinstance(opens, bool) and opens >= 0
+            and isinstance(countries, list) and all(isinstance(c, str) for c in countries))
 
 
 def render_new_users(devices: list[dict], links: list[dict]) -> str:
@@ -353,8 +376,8 @@ def render_new_users(devices: list[dict], links: list[dict]) -> str:
         places = "、".join(f"{c}（{n}）" if n > 1 else c for c, n in counts.items())
         lines.append(f"- 新裝置 {len(devices)} 台：{places}")
     if links:
-        opens = sum(int(l.get("opens") or 0) for l in links)
-        countries = sorted({c for l in links for c in (l.get("countries") or [])})
+        opens = sum(l["opens"] for l in links)
+        countries = sorted({c for l in links for c in l["countries"]})
         line = f"- 新連結 {len(links)} 個：被開啟 {opens} 次"
         if countries:
             line += f"（{'、'.join(countries)}）"
