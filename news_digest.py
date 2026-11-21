@@ -28,6 +28,7 @@
   NEWS_PUBLISH_WEEKDAY  自動模式下，星期幾發布（0=一 … 6=日）；留空 = 每天發布（預設留空）
   NEWS_DEDUP_DAYS       回看幾天內的摘要筆記做去重（預設 10，週報需 > 7）
   NEWS_PENDING_DAYS     暫存檔中超過幾天的新聞丟棄，避免發布失敗時無限累積（預設 14）
+  NEWS_NEW_USERS_FILE   選用。garmin 的 new-users.json 路徑；設定後在摘要最前面加「新使用者」統計（見 docs/specs/T42-new-users-section.md）
   NEWS_SIMILARITY       標題相似度門檻 0~1（預設 0.75）
 
 用法：
@@ -74,6 +75,7 @@ _weekday = os.getenv("NEWS_PUBLISH_WEEKDAY", "").strip()
 PUBLISH_WEEKDAY = int(_weekday) if _weekday else None
 DEDUP_DAYS = int(os.getenv("NEWS_DEDUP_DAYS", "10"))
 PENDING_DAYS = int(os.getenv("NEWS_PENDING_DAYS", "14"))
+NEW_USERS_FILE = os.getenv("NEWS_NEW_USERS_FILE", "")
 SIMILARITY = float(os.getenv("NEWS_SIMILARITY", "0.75"))
 
 UA = {"User-Agent": "Mozilla/5.0 (news-digest)"}
@@ -287,13 +289,129 @@ def save_pending(items: list[tuple[str, Article]]) -> None:
     os.replace(tmp, STATE_FILE)
 
 
+# ---------- 新使用者統計（T42，讀 garmin 的 new-users.json） ----------
+
+def _warn_new_users(msg: str) -> None:
+    print(f"⚠️ 新使用者統計：{msg}，這一段不放", file=sys.stderr)
+
+
+def _parse_time(value) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=TZ)
+
+
+def load_new_users(path: str, now: datetime) -> Optional[dict]:
+    """讀取並檢查 new-users.json（version 1）；任何問題都回 None 並印警告。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        _warn_new_users(f"找不到 {path}")
+        return None
+    except (OSError, ValueError) as e:
+        _warn_new_users(f"讀取失敗 {path}: {e}")
+        return None
+    if not isinstance(data, dict) or not all(k in data for k in ("version", "generated", "devices", "links")):
+        _warn_new_users("缺少必要欄位")
+        return None
+    if data["version"] != 1:
+        _warn_new_users(f"不支援的 version {data['version']}")
+        return None
+    if not isinstance(data["devices"], list) or not isinstance(data["links"], list):
+        _warn_new_users("devices / links 不是陣列")
+        return None
+    generated = _parse_time(data["generated"])
+    if not generated or generated.astimezone(TZ).date() != now.astimezone(TZ).date():
+        _warn_new_users(f"檔案不是今天產生的（generated={data['generated']}）")
+        return None
+    return data
+
+
+def filter_new_users(data: dict, since: Optional[datetime]) -> tuple[list[dict], list[dict]]:
+    """篩出 firstSeen 嚴格晚於 since 的裝置與連結（since 為 None 時全收），依 firstSeen 排序。"""
+    skipped = 0
+
+    def pick(entries, valid) -> list[dict]:
+        nonlocal skipped
+        out = []
+        for e in entries:
+            if not isinstance(e, dict) or not valid(e):
+                skipped += 1
+                continue
+            t = _parse_time(e.get("firstSeen"))
+            if t and (since is None or t > since):
+                out.append((t, e))
+        return [e for _, e in sorted(out, key=lambda x: x[0])]
+
+    devices = pick(data["devices"], _valid_device)
+    links = pick(data["links"], _valid_link)
+    if skipped:
+        print(f"⚠️ 新使用者統計：跳過 {skipped} 項（欄位型別不對）", file=sys.stderr)
+    return devices, links
+
+
+def _valid_device(d: dict) -> bool:
+    county = d.get("county")
+    return county is None or isinstance(county, str)
+
+
+def _valid_link(l: dict) -> bool:
+    opens = l.get("opens")
+    countries = l.get("countries")
+    return (isinstance(opens, int) and not isinstance(opens, bool) and opens >= 0
+            and isinstance(countries, list) and all(isinstance(c, str) for c in countries))
+
+
+def render_new_users(devices: list[dict], links: list[dict]) -> str:
+    """只放數量與地區，不放任何名稱、id、hash、label。"""
+    lines = []
+    if devices:
+        counts: dict[str, int] = {}
+        for d in devices:
+            county = d.get("county") or "未知"
+            counts[county] = counts.get(county, 0) + 1
+        places = "、".join(f"{c}（{n}）" if n > 1 else c for c, n in counts.items())
+        lines.append(f"- 新裝置 {len(devices)} 台：{places}")
+    if links:
+        opens = sum(l["opens"] for l in links)
+        countries = sorted({c for l in links for c in l["countries"]})
+        line = f"- 新連結 {len(links)} 個：被開啟 {opens} 次"
+        if countries:
+            line += f"（{'、'.join(countries)}）"
+        lines.append(line)
+    if not lines:
+        return ""
+    return "\n".join(["## 新使用者", "", *lines, ""])
+
+
+def last_digest_time() -> Optional[datetime]:
+    """最近一則摘要筆記的建立時間；沒有則回 None。"""
+    page = 1
+    while True:
+        r = requests.get(f"{API_URL}/notes", params={
+            "token": API_TOKEN, "fields": "title,created_time",
+            "order_by": "created_time", "order_dir": "DESC", "limit": 100, "page": page,
+        }, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        for n in data.get("items", []):
+            if n["title"].startswith(TITLE_PREFIX):
+                return datetime.fromtimestamp(n["created_time"] / 1000, TZ)
+        if not data.get("has_more"):
+            return None
+        page += 1
+
+
 # ---------- 輸出 ----------
 
 def md_escape(text: str) -> str:
     return re.sub(r"([\[\]])", r"\\\1", text)
 
 
-def render(now: datetime, items: list[tuple[str, Article]]) -> str:
+def render(now: datetime, items: list[tuple[str, Article]], new_users: str = "") -> str:
     groups: dict[str, list[Article]] = {}
     for section, _ in SECTIONS:
         arts = [a for sec, a in items if sec == section]
@@ -305,6 +423,8 @@ def render(now: datetime, items: list[tuple[str, Article]]) -> str:
     if KEYWORDS:
         head += f"。關鍵字：{'、'.join(KEYWORDS)}"
     lines = [head, ""]
+    if new_users:
+        lines += new_users.splitlines() + [""]
     for section, articles in groups.items():
         extra = len(articles) - MAX_PER_SECTION
         lines += [f"## {section}（{min(len(articles), MAX_PER_SECTION)}）", ""]
@@ -360,8 +480,14 @@ def main() -> int:
         print(f"累積中：暫存共 {len(items)} 則（{STATE_FILE}）", file=sys.stderr)
         return 0
 
-    if not items:
-        print("沒有新的新聞，不建立筆記", file=sys.stderr)
+    new_users = ""
+    if NEW_USERS_FILE:
+        data = load_new_users(NEW_USERS_FILE, now)
+        if data:
+            new_users = render_new_users(*filter_new_users(data, last_digest_time()))
+
+    if not items and not new_users:
+        print("沒有新的新聞，也沒有新使用者，不建立筆記", file=sys.stderr)
         return 0
 
     dates = [a.published for _, a in items if a.published]
@@ -369,7 +495,7 @@ def main() -> int:
     # 週報：標題帶日期區間；日報：只有當天日期。前綴不變，跨次去重靠它找舊摘要
     span = f"{start:%Y-%m-%d} ~ {now:%m-%d}" if (now - start).days >= 2 else f"{now:%Y-%m-%d}"
     title = f"{TITLE_PREFIX} {span}"
-    body = render(now, items)
+    body = render(now, items, new_users)
     if dry_run:
         print(f"# {title}\n\n{body}")
         return 0

@@ -32,6 +32,15 @@ kubectl get cronjob -n joplin-cli
 kubectl describe cronjob joplin2instapaper-cron -n joplin-cli
 ```
 
+## Tests
+
+```
+uv sync          # installs pytest (dev dependency; not included in the Docker image)
+uv run pytest
+```
+
+Tests live in `tests/` and run without network or a Joplin server. Specs are in `docs/specs/`.
+
 ## Notes
 
 - Make sure to set up all necessary environment variables in your `.env` file as required by your setup.
