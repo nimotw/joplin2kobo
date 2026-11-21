@@ -29,6 +29,7 @@
   NEWS_DEDUP_DAYS       回看幾天內的摘要筆記做去重（預設 10，週報需 > 7）
   NEWS_PENDING_DAYS     暫存檔中超過幾天的新聞丟棄，避免發布失敗時無限累積（預設 14）
   NEWS_NEW_USERS_FILE   選用。garmin 的 new-users.json 路徑；設定後在摘要最前面加「新使用者」統計（見 docs/specs/T42-new-users-section.md）
+  NEWS_NEW_USERS_CURSOR 上次發布用到的統計檔 generated（預設跟 NEWS_STATE_FILE 同目錄的 new_users_cursor.json；見 T44 規格）
   NEWS_SIMILARITY       標題相似度門檻 0~1（預設 0.75）
 
 用法：
@@ -387,6 +388,37 @@ def render_new_users(devices: list[dict], links: list[dict]) -> str:
     return "\n".join(["## 新使用者", "", *lines, ""])
 
 
+def cursor_path() -> str:
+    return os.getenv("NEWS_NEW_USERS_CURSOR") or os.path.join(
+        os.path.dirname(os.path.abspath(STATE_FILE)), "new_users_cursor.json")
+
+
+def load_cursor() -> Optional[datetime]:
+    """上次發布用到的統計檔 generated；沒有檔案回 None，壞掉也回 None 並印警告。"""
+    path = cursor_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        print(f"⚠️ 新使用者游標 {path} 讀取失敗（{e}），改用上一篇摘要的時間", file=sys.stderr)
+        return None
+    t = _parse_time(data.get("generated")) if isinstance(data, dict) else None
+    if not t:
+        print(f"⚠️ 新使用者游標 {path} 內容不對，改用上一篇摘要的時間", file=sys.stderr)
+    return t
+
+
+def save_cursor(generated: str) -> None:
+    path = cursor_path()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"generated": generated}, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 def last_digest_time() -> Optional[datetime]:
     """最近一則摘要筆記的建立時間；沒有則回 None。"""
     page = 1
@@ -481,10 +513,10 @@ def main() -> int:
         return 0
 
     new_users = ""
-    if NEW_USERS_FILE:
-        data = load_new_users(NEW_USERS_FILE, now)
-        if data:
-            new_users = render_new_users(*filter_new_users(data, last_digest_time()))
+    data = load_new_users(NEW_USERS_FILE, now) if NEW_USERS_FILE else None
+    if data:
+        since = load_cursor() or last_digest_time()
+        new_users = render_new_users(*filter_new_users(data, since))
 
     if not items and not new_users:
         print("沒有新的新聞，也沒有新使用者，不建立筆記", file=sys.stderr)
@@ -506,6 +538,8 @@ def main() -> int:
         return 1
     note_id = create_note(title, body, folder_id)
     save_pending([])  # 筆記建立成功才清空暫存
+    if data:  # 下次從這個檔的截止時間往後算（T44）
+        save_cursor(data["generated"])
     print(f"✅ 已建立筆記 {title} ({note_id})，共 {len(items)} 則", file=sys.stderr)
     return 0
 
