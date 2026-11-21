@@ -127,7 +127,7 @@ def env(monkeypatch):
           "in_inbox_after": True, "updated": [], "claude_calls": [], "claude": None,
           "clock": NOW, "sleeps": [], "finds": 0}
 
-    # T62：時鐘與 sleep 可控（raising=False：舊程式還沒有這兩個函式）
+    # T64：時鐘與 sleep 可控（raising=False：舊程式還沒有這兩個函式）
     def fake_sleep(sec):
         st["sleeps"].append(sec)
         st["clock"] += timedelta(seconds=sec)

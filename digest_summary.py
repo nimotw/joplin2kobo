@@ -31,7 +31,7 @@ DEADLINE = time(5, 59, 30)     # 06:00 note2read 送出前，claude -p 必須結
 MIN_LEFT = 60          # 距離 DEADLINE 不到這麼多秒就不呼叫 claude -p
 _weekday = os.getenv("NEWS_PUBLISH_WEEKDAY", "").strip()
 PUBLISH_WEEKDAY = int(_weekday) if _weekday else None   # None = 每天都是發布日
-# 模型文字裡不允許的字串：外部新聞可能藉 prompt injection 讓輸出夾帶連結或 HTML（T62）
+# 模型文字裡不允許的字串：外部新聞可能藉 prompt injection 讓輸出夾帶連結或 HTML（T64）
 FORBIDDEN = ("<", ">", "](", "http://", "https://", "www.")
 GROUPS = [("world", "影響全世界"), ("taiwan", "影響全台灣"), ("local", "影響少數人")]
 

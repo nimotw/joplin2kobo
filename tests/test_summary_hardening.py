@@ -1,4 +1,4 @@
-"""規格 docs/specs/T62-summary-hardening.md 的驗收條件（編號對應規格）。"""
+"""規格 docs/specs/T64-summary-hardening.md 的驗收條件（編號對應規格）。"""
 import json
 from datetime import datetime, timedelta
 
