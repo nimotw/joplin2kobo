@@ -5,6 +5,7 @@
 任何失敗都不改筆記，06:00 照舊送出原本的完整列表。規格：docs/specs/T48-digest-ai-summary.md
 
 環境變數：JOPLIN_DATA_API_URL、JOPLIN_DATA_API_TOKEN、INBOX、NEWS_TITLE_PREFIX（同 news_digest）、
+NEWS_PUBLISH_WEEKDAY（同 K8s ConfigMap；發布日找不到摘要會重試到 05:58，仍找不到就 exit 1）、
 CLAUDE_BIN（預設 ~/.local/bin/claude，找不到就用 PATH 上的 claude）。
 
 用法：uv run python digest_summary.py
@@ -15,16 +16,23 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+import time as _time
+from datetime import datetime, time
 from typing import Optional
 
 import requests
 
 import news_digest as nd
-from note2read import get_notebook_id_by_name
-
 MARKER = "<!-- ai-summary -->"
-TIMEOUT = 420  # 05:51 開始，06:00 之前要結束
+TIMEOUT = 420          # claude -p 最長等多久
+RETRY_SECONDS = 30     # 發布日找不到摘要時，隔多久再找
+POLL_UNTIL = time(5, 58)       # 發布日最晚找到這時候
+DEADLINE = time(5, 59, 30)     # 06:00 note2read 送出前，claude -p 必須結束
+MIN_LEFT = 60          # 距離 DEADLINE 不到這麼多秒就不呼叫 claude -p
+_weekday = os.getenv("NEWS_PUBLISH_WEEKDAY", "").strip()
+PUBLISH_WEEKDAY = int(_weekday) if _weekday else None   # None = 每天都是發布日
+# 模型文字裡不允許的字串：外部新聞可能藉 prompt injection 讓輸出夾帶連結或 HTML（T62）
+FORBIDDEN = ("<", ">", "](", "http://", "https://", "www.")
 GROUPS = [("world", "影響全世界"), ("taiwan", "影響全台灣"), ("local", "影響少數人")]
 
 _default_bin = os.path.expanduser("~/.local/bin/claude")
@@ -102,13 +110,13 @@ def build_prompt(items: list[dict]) -> str:
 """
 
 
-def call_claude(prompt: str) -> str:
+def call_claude(prompt: str, timeout: float = TIMEOUT) -> str:
     """回傳模型輸出的文字；逾時、結束碼非 0、is_error 都丟 SummaryError。"""
     try:
         r = subprocess.run([CLAUDE_BIN, *CLAUDE_ARGS], input=prompt, capture_output=True,
-                           text=True, timeout=TIMEOUT)
+                           text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise SummaryError(f"claude -p 超過 {TIMEOUT} 秒")
+        raise SummaryError(f"claude -p 超過 {timeout:.0f} 秒")
     if r.returncode != 0:
         raise SummaryError(f"claude -p 結束碼 {r.returncode}：{(r.stderr or r.stdout)[:300]}")
     try:
@@ -132,6 +140,11 @@ def parse_result(text: str) -> dict:
         g = data.get(key)
         if not isinstance(g, dict) or not isinstance(g.get("text"), str):
             raise SummaryError(f"模型輸出缺少 {key} 或 text 不是字串")
+        bad = [f for f in FORBIDDEN if f in g["text"]]
+        if bad:
+            raise SummaryError(f"模型輸出的 {key} 含有不允許的內容 {bad}（可能是新聞內容夾帶的指令）")
+        # 一段話：換行與連續空白壓成一個空格，開頭的 # 去掉以免變成標題
+        g["text"] = " ".join(g["text"].split()).lstrip("#").strip()
     if not any(data[k]["text"].strip() for k, _ in GROUPS):
         raise SummaryError("模型輸出三段都是空的")
     return data
@@ -165,15 +178,26 @@ def render_summary(digest: dict, result: dict) -> str:
 
 # ---------- Joplin ----------
 
-def _inbox_id() -> Optional[str]:
-    return get_notebook_id_by_name(nd.API_URL, nd.API_TOKEN, nd.INBOX)
+def _inbox_id() -> str:
+    """收件匣筆記本 id；找不到就丟 SummaryError（不像 note2read 會自動建立）。"""
+    page = 1
+    while True:
+        r = requests.get(f"{nd.API_URL}/folders", params={
+            "token": nd.API_TOKEN, "fields": "id,title", "limit": 100, "page": page}, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("items", [])
+        for f in items:
+            if f.get("title") == nd.INBOX:
+                return f["id"]
+        if not items or not data.get("has_more"):
+            raise SummaryError(f"找不到筆記本 {nd.INBOX}（INBOX 設定是否正確？）")
+        page += 1
 
 
 def find_digest(now: datetime) -> Optional[dict]:
     """收件匣裡今天（台北時間）建立、標題以摘要前綴開頭的最新一則筆記。"""
     folder = _inbox_id()
-    if not folder:
-        raise SummaryError(f"找不到筆記本 {nd.INBOX}")
     today = now.astimezone(nd.TZ).date()
     best = None
     page = 1
@@ -213,17 +237,38 @@ def update_body(note_id: str, body: str) -> None:
 
 # ---------- 主程式 ----------
 
+def _now() -> datetime:
+    return datetime.now(nd.TZ)
+
+
+def _sleep(seconds: float) -> None:
+    _time.sleep(seconds)
+
+
 def log(msg: str) -> None:
-    print(f"{datetime.now(nd.TZ):%Y-%m-%d %H:%M:%S} {msg}", file=sys.stderr)
+    print(f"{_now():%Y-%m-%d %H:%M:%S} {msg}", file=sys.stderr)
+
+
+def _at(now: datetime, t: time) -> datetime:
+    return datetime.combine(now.astimezone(nd.TZ).date(), t, tzinfo=nd.TZ)
 
 
 def main(now: Optional[datetime] = None) -> int:
-    now = now or datetime.now(nd.TZ)
+    now = now or _now()
+    publish_day = PUBLISH_WEEKDAY is None or now.weekday() == PUBLISH_WEEKDAY
+    # 06:00 之前開始的（cron 05:51）要趕在 note2read 送出前結束；之後開始的是手動執行，不設期限
+    deadline = _at(now, DEADLINE) if now < _at(now, time(6)) else None
     try:
         note = find_digest(now)
-        if not note:
-            log("今天沒有摘要筆記，不處理")
-            return 0
+        while not note:
+            if not publish_day:
+                log("今天不是發布日，沒有摘要筆記，不處理")
+                return 0
+            if _now() >= _at(now, POLL_UNTIL):
+                log("❌ 今天是發布日，但找不到摘要筆記（05:50 的發布可能失敗或太慢），沒有改寫")
+                return 1
+            _sleep(RETRY_SECONDS)
+            note = find_digest(now)
         body = note.get("body") or ""
         if MARKER in body:
             log(f"{note['title']} 已經改寫過，不處理")
@@ -232,7 +277,16 @@ def main(now: Optional[datetime] = None) -> int:
         if not digest["items"]:
             log(f"{note['title']} 沒有新聞項目，不處理")
             return 0
-        result = parse_result(call_claude(build_prompt(digest["items"])))
+        m = re.search(r"共 (\d+) 則", digest["head"])
+        if m and int(m.group(1)) != len(digest["items"]):
+            log(f"⚠️ 開頭寫共 {m.group(1)} 則，只解析出 {len(digest['items'])} 則；解析不到的不會出現在改寫後的摘要")
+        timeout = TIMEOUT
+        if deadline:
+            left = (deadline - _now()).total_seconds()
+            if left < MIN_LEFT:
+                raise SummaryError(f"距離 {DEADLINE:%H:%M:%S} 只剩 {left:.0f} 秒，來不及呼叫 claude -p")
+            timeout = min(TIMEOUT, left)
+        result = parse_result(call_claude(build_prompt(digest["items"]), timeout))
         new_body = render_summary(digest, result)
         if not still_in_inbox(note["id"]):
             log(f"{note['title']} 已經不在收件匣（可能已送出），不改")

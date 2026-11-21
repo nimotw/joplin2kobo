@@ -124,9 +124,24 @@ def test_06_text_kept_when_all_refs_invalid():
 @pytest.fixture
 def env(monkeypatch):
     st = {"note": {"id": "n1", "title": "新聞摘要 2026-11-16 ~ 11-23", "body": body()},
-          "in_inbox_after": True, "updated": [], "claude_calls": [], "claude": None}
+          "in_inbox_after": True, "updated": [], "claude_calls": [], "claude": None,
+          "clock": NOW, "sleeps": [], "finds": 0}
 
-    monkeypatch.setattr(ds, "find_digest", lambda now: st["note"])
+    # T62：時鐘與 sleep 可控（raising=False：舊程式還沒有這兩個函式）
+    def fake_sleep(sec):
+        st["sleeps"].append(sec)
+        st["clock"] += timedelta(seconds=sec)
+
+    monkeypatch.setattr(ds, "_now", lambda: st["clock"], raising=False)
+    monkeypatch.setattr(ds, "_sleep", fake_sleep, raising=False)
+    monkeypatch.setattr(ds, "PUBLISH_WEEKDAY", 0, raising=False)   # NOW 是週一 = 發布日
+
+    def fake_find(now):
+        st["finds"] += 1
+        note = st["note"]
+        return note(st) if callable(note) else note
+
+    monkeypatch.setattr(ds, "find_digest", fake_find)
     monkeypatch.setattr(ds, "still_in_inbox", lambda note_id: st["in_inbox_after"])
     monkeypatch.setattr(ds, "update_body", lambda note_id, b: st["updated"].append((note_id, b)))
 
@@ -139,11 +154,12 @@ def env(monkeypatch):
         return subprocess.CompletedProcess(args, code, stdout=out, stderr="boom" if code else "")
 
     monkeypatch.setattr(ds.subprocess, "run", fake_run)
-    st["run"] = lambda: ds.main(NOW)
+    st["run"] = lambda: ds.main(st["clock"])
     return st
 
 
-def test_01_no_digest_today(env):
+def test_01_no_digest_today(env, monkeypatch):
+    monkeypatch.setattr(ds, "PUBLISH_WEEKDAY", 3, raising=False)    # 今天不是發布日
     env["note"] = None
     assert env["run"]() == 0
     assert env["claude_calls"] == [] and env["updated"] == []
