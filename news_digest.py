@@ -29,6 +29,7 @@
   NEWS_DEDUP_DAYS       回看幾天內的摘要筆記做去重（預設 10，週報需 > 7）
   NEWS_PENDING_DAYS     暫存檔中超過幾天的新聞丟棄，避免發布失敗時無限累積（預設 14）
   NEWS_NEW_USERS_FILE   選用。garmin 的 new-users.json 路徑；設定後在摘要最前面加「新使用者」統計（見 docs/specs/T42-new-users-section.md）
+  NEWS_PUBLISHED_FILE   發布紀錄（預設跟 NEWS_STATE_FILE 同目錄的 news_published.json）；跨日去重用，見 T48 規格
   NEWS_NEW_USERS_CURSOR 上次發布用到的統計檔 generated（預設跟 NEWS_STATE_FILE 同目錄的 new_users_cursor.json；見 T44 規格）
   NEWS_SIMILARITY       標題相似度門檻 0~1（預設 0.75）
 
@@ -290,6 +291,51 @@ def save_pending(items: list[tuple[str, Article]]) -> None:
     os.replace(tmp, STATE_FILE)
 
 
+# ---------- 發布紀錄（T48：筆記改寫成三段話後不再列出全部新聞，去重改靠這份紀錄） ----------
+
+def published_path() -> str:
+    return os.getenv("NEWS_PUBLISHED_FILE") or os.path.join(
+        os.path.dirname(os.path.abspath(STATE_FILE)), "news_published.json")
+
+
+def load_published(now: datetime) -> list[dict]:
+    """DEDUP_DAYS 天內發布過的 [{key, norm, date}]；沒有檔案回 []，壞掉也回 [] 並印警告。"""
+    path = published_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as e:
+        print(f"⚠️ 發布紀錄 {path} 讀取失敗（{e}），只用摘要筆記去重", file=sys.stderr)
+        return []
+    oldest = now - timedelta(days=DEDUP_DAYS)
+    out = []
+    ok = isinstance(raw, list)
+    for r in raw if ok else []:
+        t = _parse_time(r.get("date")) if isinstance(r, dict) else None
+        if not (t and isinstance(r.get("key"), str) and isinstance(r.get("norm"), str)):
+            ok = False
+            break
+        if t >= oldest:
+            out.append(r)
+    if not ok:
+        print(f"⚠️ 發布紀錄 {path} 內容不對，只用摘要筆記去重", file=sys.stderr)
+        return []
+    return out
+
+
+def save_published(previous: list[dict], items: list[tuple[str, Article]], now: datetime) -> None:
+    date = now.isoformat()
+    data = previous + [{"key": a.key, "norm": a.norm, "date": date} for _, a in items]
+    path = published_path()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
 # ---------- 新使用者統計（T42，讀 garmin 的 new-users.json） ----------
 
 def _warn_new_users(msg: str) -> None:
@@ -499,7 +545,10 @@ def main() -> int:
         return 1
 
     pending = load_pending(now)
+    published = load_published(now)
     seen_keys, seen_titles = previous_digests(now - timedelta(days=DEDUP_DAYS))
+    seen_keys |= {r["key"] for r in published}
+    seen_titles += [r["norm"] for r in published]
     seen_keys |= {a.key for _, a in pending}
     seen_titles += [a.norm for _, a in pending]
     print(f"已收錄：最近 {DEDUP_DAYS} 天摘要 + 暫存 {len(pending)} 則", file=sys.stderr)
@@ -537,6 +586,7 @@ def main() -> int:
         print(f"找不到筆記本 {INBOX}", file=sys.stderr)
         return 1
     note_id = create_note(title, body, folder_id)
+    save_published(published, items, now)  # 筆記可能被改寫成三段話（T48），去重不能只靠筆記
     save_pending([])  # 筆記建立成功才清空暫存
     if data:  # 下次從這個檔的截止時間往後算（T44）
         save_cursor(data["generated"])
