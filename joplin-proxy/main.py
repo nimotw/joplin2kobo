@@ -1,5 +1,7 @@
 import os
 import re
+import time
+from datetime import datetime
 from typing import Optional, Set
 from fastapi import FastAPI, HTTPException, Request
 import requests
@@ -21,6 +23,32 @@ _allowed_folder_ids_env = os.getenv("ALLOWED_FOLDER_IDS", "")
 ALLOWED_FOLDER_IDS: Optional[Set[str]] = (
     set([s.strip() for s in _allowed_folder_ids_env.split(",") if s.strip()]) or None
 )
+
+
+def parse_recent_years(value: Optional[str]) -> int:
+    """ALLOWED_RECENT_YEARS: allow folders titled with one of the last N years (0 = off)."""
+    if value is None or not value.strip():
+        return 0
+    try:
+        n = int(value.strip())
+    except ValueError:
+        raise ValueError(f"ALLOWED_RECENT_YEARS must be a non-negative integer, got {value!r}")
+    if n < 0:
+        raise ValueError(f"ALLOWED_RECENT_YEARS must be a non-negative integer, got {value!r}")
+    return n
+
+
+ALLOWED_RECENT_YEARS = parse_recent_years(os.getenv("ALLOWED_RECENT_YEARS"))
+FOLDER_CACHE_TTL = 600  # seconds
+_folder_title_cache: dict = {}  # folder_id -> (fetched_at, title)
+
+
+def _current_year() -> int:
+    return datetime.now().year
+
+
+def _clock() -> float:
+    return time.monotonic()
 NOTES_URL_PREFIX = os.getenv("NOTES_URL_PREFIX", "")
 SERVER_URL = os.getenv("JOPLIN_SERVER_URL")
 USER = os.getenv("JOPLIN_USERNAME")
@@ -259,6 +287,35 @@ def _replace_joplin_resource_links(body: str, request: Request) -> str:
     return body
 
 
+def _folder_title(folder_id: str) -> str:
+    """Folder title from the Joplin API, cached for FOLDER_CACHE_TTL seconds. Failures raise 502."""
+    cached = _folder_title_cache.get(folder_id)
+    if cached and _clock() - cached[0] < FOLDER_CACHE_TTL:
+        return cached[1]
+    endpoint = f"{API_URL.rstrip('/')}/folders/{folder_id}"
+    try:
+        r = requests.get(endpoint, timeout=10, params={"token": API_TOKEN, "fields": "id,title"})
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Bad Gateway: failed to contact Joplin API")
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Bad Gateway: failed to contact Joplin API")
+    title = r.json().get("title") or ""
+    _folder_title_cache[folder_id] = (_clock(), title)
+    return title
+
+
+def _is_folder_allowed(parent_id: Optional[str]) -> bool:
+    if not ALLOWED_FOLDER_IDS and not ALLOWED_RECENT_YEARS:
+        return True
+    if ALLOWED_FOLDER_IDS and parent_id in ALLOWED_FOLDER_IDS:
+        return True
+    if not ALLOWED_RECENT_YEARS or not parent_id:
+        return False
+    year = _current_year()
+    allowed = {str(y) for y in range(year - ALLOWED_RECENT_YEARS + 1, year + 1)}
+    return _folder_title(parent_id).strip() in allowed
+
+
 @app.get("/n/{note_id}", response_class=HTMLResponse)
 @app.get("/v1/n/{note_id}", response_class=HTMLResponse)
 def get_note(note_id: str, request: Request):
@@ -285,8 +342,8 @@ def get_note(note_id: str, request: Request):
     note = r.json()
     parent_id = note.get("parent_id")
 
-    # 4) check folder whitelist if configured
-    if ALLOWED_FOLDER_IDS and parent_id not in ALLOWED_FOLDER_IDS:
+    # 4) check folder whitelist (folder ids and/or recent-year folder titles) if configured
+    if not _is_folder_allowed(parent_id):
         raise HTTPException(status_code=403, detail="Forbidden: note not in allowed folder")
 
     # 5) render body (Joplin stores note body in Markdown/HTML; often it's Markdown)

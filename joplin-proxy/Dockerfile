@@ -10,14 +10,14 @@ WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --no-editable
+    uv sync --locked --no-dev --no-install-project --no-editable
 
 # Copy application code
 ADD . /app
 
 # Sync project (install local deps)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-editable
+    uv sync --locked --no-dev --no-editable
 
 
 # Stage 2 Slim runtime
