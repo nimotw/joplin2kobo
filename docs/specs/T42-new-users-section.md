@@ -56,6 +56,11 @@ garmin（liveway）每天 05:30 產生 `new-users.json`，列出最近 7 天第�
 12. `version` 不是 1。
 13. 檔案過期：`generated` 的日期（台北時間）不是今天。
 14. 個別項目的 `firstSeen` 無法解析時，跳過該項目，其他照常。
+15. 個別項目的欄位型別不對時，跳過該項目，其他照常，並在 stderr 印一行警告（寫跳過幾項）。型別不對指：
+    - 項目本身不是物件；
+    - 裝置的 `county` 不是字串也不是 null；
+    - 連結的 `opens` 不是非負整數（缺少、`true`/`false`、小數、字串都算不對）；
+    - 連結的 `countries` 不是字串陣列（例如寫成字串 `"TW"`，或陣列裡有非字串）。
 
 ## 部署
 
@@ -73,7 +78,7 @@ garmin（liveway）每天 05:30 產生 `new-users.json`，列出最近 7 天第�
 
 - 新增 pytest（dev dependency），測試放 `tests/`，執行方式寫進 README：`uv run pytest`。
 - 測試不連網路、不連 Joplin：讀檔、篩選、產生段落的函式獨立出來，以 fixture 檔和固定時間測試。
-- 上面驗收條件 1–14 各對應至少一個測試。
+- 上面驗收條件 1–15 各對應至少一個測試。
 
 ## 回滾
 
