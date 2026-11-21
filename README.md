@@ -58,6 +58,19 @@ uv run pytest
 
 A note is allowed if either rule matches. With both unset, every notebook is allowed.
 
+## Weekly news summary (`digest_summary.py`, host cron)
+
+`news_digest.py` (K8s CronJob) publishes the weekly `新聞摘要` note on Monday 05:50.
+`digest_summary.py` runs on the **host** (it needs the `claude` CLI and the user's Claude login) at 05:51 and
+rewrites that note into three paragraphs — 影響全世界／全台灣／少數人 — plus the referenced links, before
+note2read sends it to Instapaper at 06:00. Any failure leaves the note unchanged (the full list is sent instead).
+`claude -p` runs with all tools disabled because news titles are untrusted input. Spec: `docs/specs/T48-digest-ai-summary.md`.
+
+```bash
+# ~/.config/news-summary.env (not in git): JOPLIN_DATA_API_URL, JOPLIN_DATA_API_TOKEN, INBOX=kobo
+51 5 * * * cd ~/projs/joplin/joplin2kobo && set -a && . ~/.config/news-summary.env && set +a && ~/.local/bin/uv run python digest_summary.py >> ~/.local/state/news-summary/summary.log 2>&1
+```
+
 ## Notes
 
 - Make sure to set up all necessary environment variables in your `.env` file as required by your setup.
