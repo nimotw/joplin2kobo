@@ -41,6 +41,23 @@ uv run pytest
 
 Tests live in `tests/` and run without network or a Joplin server. Specs are in `docs/specs/`.
 
+joplin-proxy is a separate uv project with its own tests:
+
+```
+cd joplin-proxy
+uv sync
+uv run pytest
+```
+
+### joplin-proxy folder access
+
+`/n/{note_id}` only serves notes whose notebook is allowed (otherwise 403):
+
+- `ALLOWED_RECENT_YEARS=N` — notebooks titled with one of the last N years (e.g. `2` = this year and last year, in the container's local time). Titles are cached for 10 minutes.
+- `ALLOWED_FOLDER_IDS` — extra notebook ids, comma-separated.
+
+A note is allowed if either rule matches. With both unset, every notebook is allowed.
+
 ## Notes
 
 - Make sure to set up all necessary environment variables in your `.env` file as required by your setup.
