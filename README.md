@@ -67,7 +67,7 @@ note2read sends it to Instapaper at 06:00. Any failure leaves the note unchanged
 `claude -p` runs with all tools disabled because news titles are untrusted input. Spec: `docs/specs/T48-digest-ai-summary.md`.
 
 ```bash
-# ~/.config/news-summary.env (not in git): JOPLIN_DATA_API_URL, JOPLIN_DATA_API_TOKEN, INBOX=kobo
+# ~/.config/news-summary.env (not in git): JOPLIN_DATA_API_URL, JOPLIN_DATA_API_TOKEN, INBOX=kobo, NEWS_PUBLISH_WEEKDAY=0
 51 5 * * * cd ~/projs/joplin/joplin2kobo && set -a && . ~/.config/news-summary.env && set +a && ~/.local/bin/uv run python digest_summary.py >> ~/.local/state/news-summary/summary.log 2>&1
 ```
 

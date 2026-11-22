@@ -551,6 +551,7 @@ def main() -> int:
     seen_titles += [r["norm"] for r in published]
     seen_keys |= {a.key for _, a in pending}
     seen_titles += [a.norm for _, a in pending]
+    seen_titles = list(dict.fromkeys(seen_titles))  # 筆記、發布紀錄、暫存常有同一則；去重複以免每則新新聞多比上千次（T64）
     print(f"已收錄：最近 {DEDUP_DAYS} 天摘要 + 暫存 {len(pending)} 則", file=sys.stderr)
 
     items = pending + collect(now, seen_keys, seen_titles)
